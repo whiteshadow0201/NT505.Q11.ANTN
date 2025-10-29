@@ -5,3 +5,4 @@ venv/
 *.log
 /Saved_Model/
 *.png
+/test/
