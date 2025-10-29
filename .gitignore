@@ -6,3 +6,4 @@ venv/
 /Saved_Model/
 *.png
 /test/
+/graphs/
