@@ -1,14 +1,14 @@
-import math
-import random
-import numpy as np
-from queue import PriorityQueue
-from copy import deepcopy
 import torch
 import torch.nn as nn
-from collections import deque, defaultdict
+import torch.nn.functional as F
 import dgl
 import dgl.function as fn
+# from dgl.nn import SAGEConv  # Cần import SAGEConv nếu bạn dùng nó (mặc dù EGraphSAGE của bạn không dùng)
 
+
+# ===================================================================
+# PHẦN 1: CÁC CLASS BẠN ĐÃ CUNG CẤP (Giữ nguyên)
+# ===================================================================
 
 class EGraphSAGELayer(nn.Module):
     """
@@ -16,6 +16,7 @@ class EGraphSAGELayer(nn.Module):
     Tầng này cập nhật embedding của các nút dựa trên thông tin từ các nút lân cận và các cạnh nối tới chúng,
     sau đó tính toán embedding cho các cạnh.
     """
+
     def __init__(self, ndim_in, edim, ndim_out, activation):
         """
         Khởi tạo tầng.
@@ -30,18 +31,16 @@ class EGraphSAGELayer(nn.Module):
         self.activation = activation
 
         # Lớp tuyến tính để cập nhật embedding của nút.
-        # Đầu vào là sự kết hợp của đặc trưng gốc của nút và thông điệp tổng hợp từ các nút lân cận.
-        # Kích thước đầu vào = (đặc trưng nút) + (đặc trưng nút nguồn + đặc trưng cạnh)
+        # Kích thước đầu vào = (đặc trưng nút gốc) + (đặc trưng nút nguồn + đặc trưng cạnh)
+        # Lưu ý: ndim_in ở đây là kích thước đầu vào của TẦNG NÀY (có thể đã bao gồm memory)
         self.W_apply = nn.Linear(ndim_in + ndim_in + edim, ndim_out)
 
         # Lớp tuyến tính để tạo embedding cho cạnh.
-        # Đầu vào là sự kết hợp của embedding (đã được cập nhật) của nút nguồn và nút đích.
         self.W_edge = nn.Linear(ndim_out * 2, ndim_out)
 
     def message_func(self, edges):
         """
         Hàm tạo thông điệp (message).
-        Thông điệp được gửi từ nút nguồn tới nút đích, chứa thông tin của cả nút nguồn và cạnh.
         """
         # Kết hợp đặc trưng của nút nguồn (edges.src['h']) và đặc trưng của cạnh (edges.data['h'])
         return {'m': torch.cat([edges.src['h'], edges.data['h']], dim=1)}
@@ -49,37 +48,25 @@ class EGraphSAGELayer(nn.Module):
     def forward(self, g, nfeats, efeats):
         """
         Hàm lan truyền tiến (forward pass).
-
-        Args:
-            g (DGLGraph): Đồ thị.
-            nfeats (Tensor): Tensor chứa đặc trưng của các nút.
-            efeats (Tensor): Tensor chứa đặc trưng của các cạnh.
-
-        Returns:
-            tuple[Tensor, Tensor]: Một cặp tensor chứa graphs mới cho các nút và các cạnh.
         """
-        # Gán đặc trưng vào đồ thị để tính toán
         with g.local_scope():
             g.ndata['h'] = nfeats
-            g.edata['h'] = efeats
+            g.edata['h'] = efeats  # Sử dụng efeats được truyền vào
 
-            # Bước 1: Truyền và tổng hợp thông điệp
-            # - message_func: tạo thông điệp từ mỗi nút nguồn.
-            # - fn.mean('m', 'h_neigh'): lấy trung bình tất cả thông điệp 'm' nhận được và lưu vào 'h_neigh'.
             g.update_all(self.message_func, fn.mean('m', 'h_neigh'))
 
-            # Bước 2: Cập nhật embedding cho các nút
-            # Kết hợp đặc trưng gốc của nút (nfeats) và thông tin từ hàng xóm (g.ndata['h_neigh'])
+            # Xử lý các nút không có hàng xóm (và do đó không có 'h_neigh')
+            if 'h_neigh' not in g.ndata:
+                g.ndata['h_neigh'] = torch.zeros(g.num_nodes(), nfeats.shape[1] + efeats.shape[1],
+                                                 device=nfeats.device, dtype=nfeats.dtype)
+
             h_nodes_new = self.W_apply(torch.cat([nfeats, g.ndata['h_neigh']], dim=1))
             if self.activation:
                 h_nodes_new = self.activation(h_nodes_new)
 
-            # Bước 3: Tính toán embedding cho các cạnh
-            # Gán embedding mới của nút vào đồ thị để lấy thông tin nút nguồn/đích
             g.ndata['h_new'] = h_nodes_new
             u, v = g.edges()
 
-            # Kết hợp embedding mới của nút nguồn và nút đích
             edge_input = torch.cat([g.ndata['h_new'][u], g.ndata['h_new'][v]], dim=1)
             h_edges_new = self.W_edge(edge_input)
             if self.activation:
@@ -87,73 +74,71 @@ class EGraphSAGELayer(nn.Module):
 
             return h_nodes_new, h_edges_new
 
+
 class EGraphSAGE(nn.Module):
     """
     Mô hình E-GraphSAGE hoàn chỉnh, bao gồm nhiều tầng EGraphSAGELayer.
     """
+
     def __init__(self, ndim_in, edim, n_hidden, n_out, n_layers, activation):
         """
         Khởi tạo mô hình.
-
-        Args:
-            ndim_in (int): Kích thước đặc trưng đầu vào của nút.
-            edim (int): Kích thước đặc trưng của cạnh.
-            n_hidden (int): Kích thước của các tầng ẩn.
-            n_out (int): Kích thước embedding đầu ra cuối cùng.
-            n_layers (int): Số lượng tầng EGraphSAGELayer.
-            activation (function): Hàm kích hoạt.
+        Lưu ý: ndim_in ở đây là kích thước đã MỞ RỘNG (bao gồm cả memory)
         """
         super(EGraphSAGE, self).__init__()
         self.layers = nn.ModuleList()
+        self.n_layers = n_layers
 
-        # Tầng đầu tiên: chuyển từ kích thước đầu vào sang kích thước ẩn
-        self.layers.append(EGraphSAGELayer(ndim_in, edim, n_hidden, activation))
+        # Khởi tạo kích thước hiện tại
+        current_ndim_in = ndim_in
+        current_edim = edim
 
-        # Các tầng ẩn tiếp theo
+        # --- SỬA LOGIC KHỞI TẠO ---
+        # Tầng đầu tiên: (in/in -> hidden/hidden)
+        self.layers.append(EGraphSAGELayer(current_ndim_in, current_edim, n_hidden, activation))
+
+        # Cập nhật dim cho tầng tiếp theo
+        current_ndim_in = n_hidden
+        current_edim = n_hidden  # Vì W_edge output dim = ndim_out (là n_hidden)
+
+        # Các tầng ẩn: (hidden/hidden -> hidden/hidden)
         for _ in range(n_layers - 2):
-            self.layers.append(EGraphSAGELayer(n_hidden, edim, n_hidden, activation))
+            self.layers.append(EGraphSAGELayer(current_ndim_in, current_edim, n_hidden, activation))
+            # Dim vẫn là n_hidden cho các tầng ẩn tiếp theo
+            current_ndim_in = n_hidden
+            current_edim = n_hidden
 
-        # Tầng cuối cùng: chuyển từ kích thước ẩn sang kích thước đầu ra
-        # Nếu chỉ có 1 tầng, tầng này cũng là tầng đầu tiên
-        if n_layers > 1:
-            self.layers.append(EGraphSAGELayer(n_hidden, edim, n_out, activation))
-        else:
-             # Ghi đè tầng đầu tiên nếu n_layers = 1
-            self.layers[0] = EGraphSAGELayer(ndim_in, edim, n_out, activation)
+        # Tầng cuối: (hidden/hidden -> out/out)
+        self.layers.append(EGraphSAGELayer(current_ndim_in, current_edim, n_out, activation))
+
+        final_node_out = n_out
+        final_edge_out = n_out  # W_edge output dim = ndim_out (là n_out)
+
+        self.out_feats_node = final_node_out
+        self.out_feats_edge = final_edge_out
 
     def forward(self, g, nfeats, efeats, corrupt=False):
         """
         Hàm lan truyền tiến của toàn bộ mô hình.
-
-        Args:
-            g (DGLGraph): Đồ thị.
-            nfeats (Tensor): Đặc trưng nút ban đầu.
-            efeats (Tensor): Đặc trưng cạnh ban đầu.
-            corrupt (bool): Nếu True, xáo trộn đặc trưng cạnh để tạo negative samples.
         """
-        # THÊM logic xử lý `corrupt`
+        local_efeats = efeats
         if corrupt:
-            # Tạo một hoán vị ngẫu nhiên của các chỉ số cạnh
-            perm = torch.randperm(efeats.shape[0])
-            # Xáo trộn đặc trưng cạnh theo hoán vị đó
-            efeats = efeats[perm]
+            perm = torch.randperm(local_efeats.shape[0], device=local_efeats.device)
+            local_efeats = local_efeats[perm]
 
         h_nodes = nfeats
-        h_edges = efeats
-        # Lặp qua từng tầng của mô hình
-        for i, layer in enumerate(self.layers):
-            # Đặc trưng cạnh (efeats) ban đầu (hoặc đã bị xáo trộn) được sử dụng cho tất cả các tầng
-            # Đặc trưng nút (h_nodes) được cập nhật qua mỗi tầng
-            h_nodes, h_edges = layer(g, h_nodes, efeats)
+        h_edges = local_efeats  # Khởi tạo
 
+        for i, layer in enumerate(self.layers):
+            # --- SỬA LOGIC FORWARD ---
+            # Giờ đây, h_edges (output của tầng trước) được dùng làm input cho tầng này
+            h_nodes, h_edges = layer(g, h_nodes, h_edges)
+
+        # Trả về kết quả từ tầng cuối cùng
         return h_nodes, h_edges
 
 # DGI classes
 class Discriminator(nn.Module):
-    """
-    Bộ phân biệt (Discriminator) cho DGI.
-    Nó tính toán một điểm số cho cặp (embedding, tóm tắt đồ thị).
-    """
     def __init__(self, n_hidden):
         super(Discriminator, self).__init__()
         self.bilinear = nn.Bilinear(n_hidden, n_hidden, 1)
@@ -167,41 +152,207 @@ class Discriminator(nn.Module):
                 m.bias.data.fill_(0.0)
 
     def forward(self, features, summary):
-        # Mở rộng summary để có cùng số chiều với features
         summary_expanded = summary.expand_as(features)
         scores = self.bilinear(features, summary_expanded)
         return scores
 
+
 class DGI(nn.Module):
-    """
-    Mô hình Deep Graph Infomax (DGI).
-    """
     def __init__(self, encoder):
         super(DGI, self).__init__()
         self.encoder = encoder
-        # Kích thước đầu ra của encoder chính là kích thước ẩn cho discriminator
-        self.discriminator = Discriminator(encoder.layers[-1].W_edge.out_features)
+
+        # Kích thước đầu ra CẠNH của encoder
+        # Cần truy cập vào EGraphSAGE bên trong TGNWrapper
+        if isinstance(encoder, TGNWrapperEncoder):
+            sage_encoder = encoder.sage_encoder
+        else:
+            sage_encoder = encoder  # Nếu dùng EGraphSAGE trực tiếp
+
+        self.discriminator = Discriminator(sage_encoder.out_feats_edge)
         self.loss = nn.BCEWithLogitsLoss()
 
     def forward(self, g, nfeats, efeats):
-        # 1. Tạo embedding "dương" từ đồ thị gốc
+        # 1. Tạo embedding "dương"
+        # TGNWrapper.forward sẽ được gọi ở đây
         _, positive_edges = self.encoder(g, nfeats, efeats, corrupt=False)
 
-        # 2. Tạo embedding "âm" từ đồ thị bị làm hỏng
+        # 2. Tạo embedding "âm"
         _, negative_edges = self.encoder(g, nfeats, efeats, corrupt=True)
 
-        # 3. Tạo một vector tóm tắt cho toàn bộ đồ thị
-        # Ở đây, chúng ta dùng trung bình của các embedding cạnh "dương"
+        # 3. Tạo vector tóm tắt
         summary = torch.sigmoid(positive_edges.mean(dim=0))
 
-        # 4. Tính điểm cho cả mẫu dương và âm
+        # 4. Tính điểm
         positive_scores = self.discriminator(positive_edges, summary)
         negative_scores = self.discriminator(negative_edges, summary)
 
         # 5. Tính loss
-        # Mô hình cần dự đoán điểm cao (gần 1) cho mẫu dương
-        # và điểm thấp (gần 0) cho mẫu âm.
         l1 = self.loss(positive_scores, torch.ones_like(positive_scores))
         l2 = self.loss(negative_scores, torch.zeros_like(negative_scores))
 
         return l1 + l2
+
+
+# ===================================================================
+# PHẦN 2: TGN WRAPPER ENCODER (ĐÃ ĐIỀU CHỈNH)
+# ===================================================================
+
+class TGNWrapperEncoder(nn.Module):
+    def __init__(self, num_nodes, node_feat_dim, edge_feat_dim,
+                 memory_dim, msg_dim,
+                 sage_n_hidden, sage_n_out, sage_n_layers, sage_activation):
+        """
+        Khởi tạo TGN Wrapper.
+        Wrapper này sẽ tự khởi tạo EGraphSAGE bên trong nó.
+        """
+        super().__init__()
+
+        self.memory_dim = memory_dim
+        self.edge_feat_dim = edge_feat_dim
+        self.node_feat_dim = node_feat_dim
+        self.num_nodes = num_nodes
+
+        # --- TGN Components ---
+        self.memory = nn.Parameter(torch.zeros((num_nodes, memory_dim)), requires_grad=False)
+        self.msg_gen_fn = nn.Linear(memory_dim * 2 + edge_feat_dim, msg_dim)
+        self.memory_updater = nn.GRUCell(input_size=msg_dim, hidden_size=memory_dim)
+
+        # --- EGraphSAGE Encoder (Internal) ---
+        # Kích thước đầu vào của SAGE = đặc trưng gốc + bộ nhớ TGN
+        sage_ndim_in = node_feat_dim + memory_dim
+
+        self.sage_encoder = EGraphSAGE(
+            ndim_in=sage_ndim_in,
+            edim=edge_feat_dim,
+            n_hidden=sage_n_hidden,
+            n_out=sage_n_out,
+            n_layers=sage_n_layers,
+            activation=sage_activation
+        )
+
+        print(f"TGNWrapperEncoder khởi tạo với {num_nodes} nút.")
+        print(f"  Memory dim: {memory_dim}")
+        print(f"  EGraphSAGE input dim: {sage_ndim_in} (node={node_feat_dim} + mem={memory_dim})")
+
+    def _compute_messages(self, edges):
+        """
+        Hàm tính toán message cho TGN Memory.
+        Input: (mem_src, mem_dst, edge_feat)
+        """
+        src_mem = edges.src['mem']
+        dst_mem = edges.dst['mem']
+        edge_feat = edges.data['h_edge']
+
+        edge_feat = edge_feat.to(src_mem.dtype)  # Đảm bảo kiểu dữ liệu
+
+        input_features = torch.cat([src_mem, dst_mem, edge_feat], dim=1)
+        msg = F.relu(self.msg_gen_fn(input_features))
+        return {'msg': msg}
+
+    def forward(self, g, nfeats, efeats, corrupt=False):
+        """
+        Hàm forward này được gọi bởi DGI loop.
+        """
+
+        # --- 1. CẬP NHẬT BỘ NHỚ (TGN Memory Update) ---
+        # (Không lan truyền gradient qua bước cập nhật bộ nhớ)
+        with torch.no_grad():
+            with g.local_scope():
+                g.ndata['mem'] = self.memory
+                g.edata['h_edge'] = efeats
+
+                g.apply_edges(self._compute_messages)
+
+                # Tổng hợp message
+                g.update_all(fn.copy_e('msg', 'm'), fn.mean('m', 'agg_msg'))
+
+                # Lấy message đã tổng hợp (xử lý nút cô lập)
+                agg_msg = torch.zeros((g.num_nodes(), self.msg_gen_fn.out_features),
+                                      dtype=self.memory.dtype,
+                                      device=self.memory.device)
+
+                if 'agg_msg' in g.ndata:
+                    dst_nodes_with_msg = g.dstnodes()  # Chỉ các nút nhận được message
+                    agg_msg[dst_nodes_with_msg] = g.ndata['agg_msg'][dst_nodes_with_msg]
+
+                # Cập nhật bộ nhớ bằng GRU
+                current_mem = self.memory
+                new_memory = self.memory_updater(agg_msg, current_mem)
+                self.memory.data = new_memory  # Cập nhật trạng thái vĩnh viễn
+
+        # --- 2. TÍNH TOÁN EMBEDDING (EGraphSAGE) ---
+
+        # Tạo đặc trưng nút mở rộng
+        augmented_nfeats = torch.cat([nfeats, self.memory], dim=1)
+
+        # Gọi EGraphSAGE
+        # EGraphSAGE sẽ tự xử lý logic 'corrupt' cho efeats
+        h_nodes, h_edges = self.sage_encoder(g, augmented_nfeats, efeats, corrupt=corrupt)
+
+        return h_nodes, h_edges
+
+    # --- CÁC HÀM TIỆN ÍCH ĐỂ THÍCH ỨNG VỚI THAY ĐỔI ---
+
+    @torch.no_grad()
+    def add_node(self, node_id, initial_memory=None):
+        """
+        Thêm một nút mới vào bộ nhớ.
+        """
+        if node_id != self.memory.shape[0]:
+            print(f"Cảnh báo: ID nút mới {node_id} không liên tục. Kỳ vọng {self.memory.shape[0]}")
+            # Cần xử lý phức tạp hơn nếu ID không liên tục...
+
+        if initial_memory is None:
+            new_mem_vector = torch.zeros((1, self.memory_dim),
+                                         dtype=self.memory.dtype,
+                                         device=self.memory.device)
+        else:
+            new_mem_vector = initial_memory.view(1, self.memory_dim)
+
+        self.memory = nn.Parameter(torch.cat([self.memory.data, new_mem_vector], dim=0),
+                                   requires_grad=False)
+        self.num_nodes = self.memory.shape[0]
+        print(f"Đã thêm nút {node_id}. Kích thước bộ nhớ mới: {self.memory.shape}")
+
+    @torch.no_grad()
+    def process_new_edges(self, new_edges_g):
+        """
+        Chỉ chạy phần cập nhật bộ nhớ (TGN) trên một đồ thị con
+        chứa các cạnh/sự kiện MỚI.
+        """
+        print(f"Đang xử lý {new_edges_g.num_edges()} cạnh mới...")
+
+        if new_edges_g.num_nodes() != self.num_nodes:
+            print(f"Lỗi: Đồ thị cạnh mới có {new_edges_g.num_nodes()} nút, "
+                  f"nhưng bộ nhớ có {self.num_nodes} nút.")
+            # Bạn cần tạo lại new_edges_g với dgl.graph((src, dst), num_nodes=self.num_nodes)
+            return
+
+        with new_edges_g.local_scope():
+            new_edges_g.ndata['mem'] = self.memory
+            # (Bạn cần gán new_edges_g.edata['h_edge'] nếu có)
+
+            new_edges_g.apply_edges(self._compute_messages)
+            new_edges_g.update_all(fn.copy_e('msg', 'm'), fn.mean('m', 'agg_msg'))
+
+            agg_msg = torch.zeros((self.num_nodes, self.msg_gen_fn.out_features),
+                                  dtype=self.memory.dtype,
+                                  device=self.memory.device)
+
+            if 'agg_msg' in new_edges_g.ndata:
+                affected_nodes = new_edges_g.dstnodes()
+                agg_msg[affected_nodes] = new_edges_g.ndata['agg_msg'][affected_nodes]
+            else:
+                affected_nodes = torch.tensor([], dtype=torch.long, device=self.memory.device)
+
+            # Chỉ cập nhật bộ nhớ cho các nút bị ảnh hưởng
+            if affected_nodes.shape[0] > 0:
+                current_mem_affected = self.memory[affected_nodes]
+                agg_msg_affected = agg_msg[affected_nodes]
+
+                new_mem_affected = self.memory_updater(agg_msg_affected, current_mem_affected)
+                self.memory.data[affected_nodes] = new_mem_affected
+                print(f"Đã cập nhật bộ nhớ cho {len(affected_nodes)} nút bị ảnh hưởng.")
+            else:
+                print("Không có nút nào bị ảnh hưởng (ví dụ: đồ thị rỗng).")
