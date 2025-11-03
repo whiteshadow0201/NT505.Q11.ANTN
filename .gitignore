@@ -1,9 +1,0 @@
-__pycache__/
-*.pyc
-.idea/
-venv/
-*.log
-/Saved_Model/
-*.png
-/test/
-/graphs/
