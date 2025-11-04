@@ -11,11 +11,21 @@ from fmoe import FMoE
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
 
+
+class LinearExpert(nn.Module):
+    def __init__(self, in_features, out_features):
+        super().__init__()
+        self.linear = nn.Linear(in_features, out_features)
+
+    def forward(self, x, _count=None):  # nhận thêm tham số nhưng bỏ qua
+        return self.linear(x)
+
+
 # ----------------- Lớp EGraphSAGELayer -----------------
 class EGraphSAGELayer(nn.Module):
     def __init__(self, ndim_in, edim_in, ndim_out, edim_out, activation,
                  moe=False,
-                 num_experts=4,
+                 num_experts=2,
                  top_k=1,
                  hhsize_time=None,
                  moe_use_linear=False):
@@ -35,10 +45,10 @@ class EGraphSAGELayer(nn.Module):
             in_edge = ndim_out * 2
 
             def make_apply_expert(d_model):
-                return nn.Linear(d_model, ndim_out)
+                return LinearExpert(d_model, ndim_out)
 
             def make_edge_expert(d_model):
-                return nn.Linear(d_model, edim_out)
+                return LinearExpert(d_model, edim_out)
 
             self.W_apply = FMoE(
                 num_expert=num_experts,

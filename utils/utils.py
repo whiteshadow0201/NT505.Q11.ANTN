@@ -442,67 +442,53 @@ class NetworkEnv:
 #
 #
 
-def evaluate_model(model, env, num_episodes=1000):
+def evaluate_model(model, env, num_episodes=1000, device=None):
+    """
+    Evaluate a trained DQN model on the environment using CUDA if available.
+    """
+
+
+    model = model.to(device)
+    model.eval()  # Chế độ evaluation: tắt dropout, batchnorm, ...
+
     successes = 0
     action_space_size = env.get_action_space_size()
 
-    # --- THÊM: Chuyển model sang chế độ đánh giá ---
-    # Tắt các cơ chế như Dropout (nếu có)
-    model.eval()
-
     for episode in range(1, num_episodes + 1):
-        state = env.reset()  # state là Tensor [N, D]
+        state = env.reset().to(device)  # <-- chuyển state sang device
         done = False
 
         while not done:
             with torch.no_grad():
-                # --- SỬA LỖI CHÍNH ---
-                # 1. 'state' đã là Tensor
-                # 2. Flatten state từ [N, D] -> [1, N*D]
-                state_tensor = state.flatten().unsqueeze(0)
+                # Flatten state [N, D] -> [1, N*D]
+                state_tensor = state.flatten().unsqueeze(0).to(device)
 
                 q_values = model(state_tensor).squeeze(0)  # shape: [action_space_size]
 
-                # (Logic lọc q_values và chọn action giữ nguyên)
-                valid_indices = [idx for idx in range(action_space_size) if is_valid_index(idx, env.num_honeypot_nodes)]
+                # Chỉ chọn action hợp lệ
+                valid_indices = [idx for idx in range(action_space_size)
+                                 if is_valid_index(idx, env.num_honeypot_nodes)]
                 valid_q_values = q_values[valid_indices]
                 max_idx_in_valid = torch.argmax(valid_q_values).item()
                 action_idx = valid_indices[max_idx_in_valid]
 
             action = index_to_action(action_idx, env.num_honeypot_nodes)
+
+            # Lấy next_state, reward
             next_state, reward, done, path, captured = env.step(action)
+            state = next_state.to(device)  # <-- chuyển next_state sang device
 
-            state = next_state  # state mới là Tensor [N, D]
-
-            # --- SỬA LỖI LOGGING: Chỉ in khi episode kết thúc ---
-
-            if reward == 1:  # Honeypot bẫy được kẻ tấn công
-                successes += 1
-
-                # Tính toán honeypots ở đây
-                honeypot_nodes = []
-                for i in range(2):
-                    node_idx = np.argmax(action[i])
-                    honeypot_nodes.append(env.honeypot_nodes[node_idx])
-
-                print(f"--- Episode {episode}: Success ---")
+            # Logging khi kết thúc episode
+            if reward != 0:  # success hoặc fail
+                honeypot_nodes = [env.honeypot_nodes[np.argmax(action[i])] for i in range(2)]
+                status = "Success" if reward == 1 else "Failed"
+                print(f"--- Episode {episode}: {status} ---")
                 print(path)
                 print(f"Honeypots connected to: {honeypot_nodes}\n")
-                break  # Thoát vòng while
 
-            elif reward == -1:  # Kẻ tấn công đạt mục tiêu
-                # Tính toán honeypots ở đây
-                honeypot_nodes = []
-                for i in range(2):
-                    node_idx = np.argmax(action[i])
-                    honeypot_nodes.append(env.honeypot_nodes[node_idx])
-
-                print(f"--- Episode {episode}: Failed ---")
-                print(path)
-                print(f"Honeypots connected to: {honeypot_nodes}\n")
-                break  # Thoát vòng while
-
-            # Nếu reward == 0 (chưa xong), vòng lặp while tiếp tục
+                if reward == 1:
+                    successes += 1
+                break  # Kết thúc episode
 
     dsp = (successes / num_episodes) * 100
     print(f"\n--- Evaluation Complete ---")
