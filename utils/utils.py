@@ -287,7 +287,7 @@ class NetworkEnv:
     def __init__(self, G_new, attack_fn, g_dgl, encoder,
                  original_node_features, original_edge_features,
                  node_map,  # <-- Thay đổi: Nhận trực tiếp node_map
-                 goal="Data Server"):
+                 goal=None):
 
         # --- Phần GNN ---
         self.g_dgl = g_dgl
