@@ -3,8 +3,4 @@ __pycache__/
 .idea/
 venv/
 *.log
-/saved_model/
 *.png
-/test/
-/graphs/
-/graph_test/
