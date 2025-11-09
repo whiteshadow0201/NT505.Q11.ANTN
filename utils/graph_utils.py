@@ -5,68 +5,24 @@ import dgl
 import dgl.function as fn
 from utils import *
 
-# --- Dùng FMoE (high-level) ---
-from fmoe import FMoE
+# --- Đã loại bỏ FMoE (FastMoE) ---
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
 
 
-class LinearExpert(nn.Module):
-    def __init__(self, in_features, out_features):
-        super().__init__()
-        self.linear = nn.Linear(in_features, out_features)
 
-    def forward(self, x, _count=None):  # nhận thêm tham số nhưng bỏ qua
-        return self.linear(x)
-
-
-# ----------------- Lớp EGraphSAGELayer -----------------
+# ----------------- Lớp EGraphSAGELayer (Phiên bản không MoE) -----------------
 class EGraphSAGELayer(nn.Module):
-    def __init__(self, ndim_in, edim_in, ndim_out, edim_out, activation,
-                 moe=False,
-                 num_experts=2,
-                 top_k=1,
-                 hhsize_time=None,
-                 moe_use_linear=False):
+    def __init__(self, ndim_in, edim_in, ndim_out, edim_out, activation):
         super(EGraphSAGELayer, self).__init__()
         self.activation = activation
-        self.hhsize_time = hhsize_time
-        self.moe_use_linear = moe_use_linear
         self.node_out_dim = ndim_out
         self.edge_out_dim = edim_out
 
-        if not moe:
-            self.W_apply = nn.Linear(ndim_in + ndim_in + edim_in, ndim_out)
-            self.W_edge = nn.Linear(ndim_out * 2, edim_out)
-        else:
-            print("Running FMOE")
-            in_apply = ndim_in + ndim_in + edim_in
-            in_edge = ndim_out * 2
-
-            def make_apply_expert(d_model):
-                return LinearExpert(d_model, ndim_out)
-
-            def make_edge_expert(d_model):
-                return LinearExpert(d_model, edim_out)
-
-            self.W_apply = FMoE(
-                num_expert=num_experts,
-                d_model=in_apply,
-                expert=make_apply_expert,
-                top_k=top_k,
-                world_size=1,
-                moe_group=None,
-            )
-
-            self.W_edge = FMoE(
-                num_expert=num_experts,
-                d_model=in_edge,
-                expert=make_edge_expert,
-                top_k=top_k,
-                world_size=1,
-                moe_group=None,
-            )
+        # Chỉ sử dụng các lớp Linear tiêu chuẩn
+        self.W_apply = nn.Linear(ndim_in + ndim_in + edim_in, ndim_out)
+        self.W_edge = nn.Linear(ndim_out * 2, edim_out)
 
     def message_func(self, edges):
         return {'m': torch.cat([edges.src['h'], edges.data['h']], dim=1)}
@@ -92,44 +48,25 @@ class EGraphSAGELayer(nn.Module):
 
             return h_nodes_new, h_edges_new
 
-# ----------------- Encoder -----------------
+
+# ----------------- Encoder (Phiên bản không MoE) -----------------
 class EGraphSAGE_GraphAlign(nn.Module):
-    def __init__(self, ndim_in, edim, n_hidden, n_out, n_layers, activation,
-                 num_experts=4, top_k=1, hhsize_time=1, moe_use_linear=False, moe_layer=None):
+    def __init__(self, ndim_in, edim, n_hidden, n_out, n_layers, activation):
         super(EGraphSAGE_GraphAlign, self).__init__()
         self.layers = nn.ModuleList()
-        if moe_layer is None:
-            moe_layer = list(range(n_layers))
 
-        moe_params_0 = {
-            "moe": (0 in moe_layer),
-            "num_experts": num_experts,
-            "top_k": top_k,
-            "hhsize_time": hhsize_time,
-            "moe_use_linear": moe_use_linear
-        }
+        # Đã loại bỏ tất cả logic và tham số liên quan đến MoE
 
         if n_layers == 1:
-            self.layers.append(EGraphSAGELayer(ndim_in, edim, n_out, n_out, activation, **moe_params_0))
+            self.layers.append(EGraphSAGELayer(ndim_in, edim, n_out, n_out, activation))
         else:
-            self.layers.append(EGraphSAGELayer(ndim_in, edim, n_hidden, n_hidden, activation, **moe_params_0))
+            # Lớp đầu tiên
+            self.layers.append(EGraphSAGELayer(ndim_in, edim, n_hidden, n_hidden, activation))
+            # Các lớp ẩn
             for l in range(1, n_layers - 1):
-                moe_params_l = {
-                    "moe": (l in moe_layer),
-                    "num_experts": num_experts,
-                    "top_k": top_k,
-                    "hhsize_time": hhsize_time,
-                    "moe_use_linear": moe_use_linear
-                }
-                self.layers.append(EGraphSAGELayer(n_hidden, n_hidden, n_hidden, n_hidden, activation, **moe_params_l))
-            moe_params_last = {
-                "moe": (n_layers - 1 in moe_layer),
-                "num_experts": num_experts,
-                "top_k": top_k,
-                "hhsize_time": hhsize_time,
-                "moe_use_linear": moe_use_linear
-            }
-            self.layers.append(EGraphSAGELayer(n_hidden, n_hidden, n_out, n_out, activation, **moe_params_last))
+                self.layers.append(EGraphSAGELayer(n_hidden, n_hidden, n_hidden, n_hidden, activation))
+            # Lớp cuối cùng
+            self.layers.append(EGraphSAGELayer(n_hidden, n_hidden, n_out, n_out, activation))
 
     def forward(self, g, nfeats, efeats, corrupt=False):
         if corrupt:
@@ -145,6 +82,7 @@ class EGraphSAGE_GraphAlign(nn.Module):
             h_nodes, h_edges = layer(g, h_nodes, h_edges)
 
         return h_nodes, h_edges
+
 
 # ----------------- Discriminator -----------------
 class Discriminator(nn.Module):
@@ -165,17 +103,24 @@ class Discriminator(nn.Module):
         scores = self.bilinear(features, summary_expanded)
         return scores
 
+
 # ----------------- DGI Model -----------------
 class DGI_GraphAlign(nn.Module):
     def __init__(self, encoder):
         super(DGI_GraphAlign, self).__init__()
         self.encoder = encoder
+
+        # Logic này vẫn hoạt động vì EGraphSAGELayer vẫn lưu self.edge_out_dim
         last_layer_out_dim = getattr(encoder.layers[-1], "edge_out_dim", None)
+
         if last_layer_out_dim is None:
+            # Fallback (phòng trường hợp) - cũng sẽ hoạt động vì W_edge là nn.Linear
             last_layer = encoder.layers[-1].W_edge
             last_layer_out_dim = getattr(last_layer, "out_features", None)
+
         if last_layer_out_dim is None:
             raise RuntimeError("Không xác định được kích thước đầu ra của W_edge ở tầng cuối cùng.")
+
         self.discriminator = Discriminator(last_layer_out_dim)
         self.loss = nn.BCEWithLogitsLoss()
 

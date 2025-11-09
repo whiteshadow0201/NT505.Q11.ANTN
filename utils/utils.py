@@ -283,38 +283,47 @@ class ReplayBuffer:
 
 # (Giả sử các class GNN, DGI... đã được định nghĩa ở trên)
 
+import numpy as np
+import torch
+import random
+from copy import deepcopy
+
+
 class NetworkEnv:
     def __init__(self, G_new, attack_fn, g_dgl, encoder,
                  original_node_features, original_edge_features,
-                 node_map,  # <-- Thay đổi: Nhận trực tiếp node_map
-                 goal=None):
+                 node_map,
+                 goal=None):  # Goal bây giờ có thể là một danh sách, ví dụ: ['server1', 'db1']
 
         # --- Phần GNN ---
         self.g_dgl = g_dgl
         self.encoder = encoder
         self.original_node_features = original_node_features.clone()
         self.original_edge_features = original_edge_features.clone()
-        self.encoder.eval()  # Chuyển sang chế độ dự đoán
+        self.encoder.eval()
 
         # --- Phần Môi trường và Phát triển nông thôn ---
         self.G_new = G_new
         self.attack_fn = attack_fn
-        self.goal = goal
 
-        # --- THAY ĐỔI: Sử dụng trực tiếp node_map ---
-        # 1. Sử dụng trực tiếp bản đồ node-to-index đã được tải
+        # --- SỬA ĐỔI: Xử lý goal (bây giờ là một danh sách) ---
+        # Đảm bảo self.goal luôn là một danh sách, ngay cả khi goal=None hoặc goal là một mục tiêu đơn lẻ (mặc dù khuyến nghị là luôn truyền vào danh sách)
+        if goal is None:
+            self.goal = []
+        elif not isinstance(goal, list):
+            self.goal = [goal]  # Nếu lỡ truyền vào 1 string, tự động chuyển thành list
+        else:
+            self.goal = goal
+        # --- Hết sửa đổi ---
+
+        # --- Sử dụng trực tiếp node_map ---
         self.node_to_idx = node_map
-
-        # 2. Lấy danh sách nodes từ các keys của bản đồ
         self.nodes = list(node_map.keys())
-
-        # 3. Lấy tổng số node
         self.num_nodes = len(self.nodes)
-        # --- Hết thay đổi ---
 
         print("node_to_idx đã được tải:", self.node_to_idx)
+        print(f"Mục tiêu (Goals) được thiết lập: {self.goal}")
 
-        # State NumPy (nội bộ), được khởi tạo với kích thước chính xác
         self.state_np = np.zeros(self.num_nodes, dtype=np.float32)
 
         # (Logic honeypot giữ nguyên)
@@ -323,8 +332,7 @@ class NetworkEnv:
 
     def _get_embeddings_from_state(self, numpy_state_array):
         """
-        Hàm helper: Chạy GNN encoder để lấy graphs từ mảng state NumPy.
-        (Giữ nguyên, không thay đổi)
+        (Giữ nguyên)
         """
         new_node_features = self.original_node_features.clone()
         new_state_tensor = torch.tensor(numpy_state_array, dtype=torch.float32)
@@ -340,7 +348,7 @@ class NetworkEnv:
 
     def reset(self):
         """
-        (Giữ nguyên, không thay đổi)
+        (Giữ nguyên)
         """
         self.state_np = np.zeros(self.num_nodes, dtype=np.float32)
         initial_embeddings = self._get_embeddings_from_state(self.state_np)
@@ -348,7 +356,7 @@ class NetworkEnv:
 
     def step(self, action):
         """
-        (Logic bên trong giữ nguyên, không thay đổi)
+        Phương thức step đã được cập nhật để xử lý self.goal là một danh sách.
         """
         honeypots = []
         G = deepcopy(self.G_new)
@@ -364,6 +372,7 @@ class NetworkEnv:
             G.add_edge(node, honeypot, user=0.8, root=0.8)
             self.graph = deepcopy(G)
 
+        # self.goal (danh sách) được truyền vào attack_fn
         path, captured = self.attack_fn(G, honeypots, self.goal)
 
         new_state_np = np.zeros(self.num_nodes, dtype=np.float32)
@@ -373,11 +382,18 @@ class NetworkEnv:
         if any(h in captured for h in honeypots):
             reward = 1
             done = True
-        elif self.goal in captured:
+
+        # <--- SỬA ĐỔI 1: Kiểm tra nếu BẤT KỲ goal nào trong danh sách bị bắt
+        # Original: elif self.goal in captured:
+        elif any(g in captured for g in self.goal):
             reward = -1
             done = True
-            # self.node_to_idx hoạt động chính xác vì nó là node_map
-            new_state_np[self.node_to_idx[self.goal]] = 1
+
+            # <--- SỬA ĐỔI 2: Cập nhật state cho TẤT CẢ các node mục tiêu
+            # Original: new_state_np[self.node_to_idx[self.goal]] = 1
+            for g in self.goal:
+                if g in self.node_to_idx:  # Đảm bảo goal node có trong bản đồ
+                    new_state_np[self.node_to_idx[g]] = 1
 
         for node in captured:
             if node in self.node_to_idx:
@@ -391,7 +407,7 @@ class NetworkEnv:
 
     def get_action_space_size(self):
         """
-        (Giữ nguyên, không thay đổi)
+        (Giữ nguyên)
         """
         return 2 * self.num_honeypot_nodes ** 2 + self.num_honeypot_nodes
 
