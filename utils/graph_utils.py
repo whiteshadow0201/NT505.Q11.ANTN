@@ -50,9 +50,9 @@ class EGraphSAGELayer(nn.Module):
 
 
 # ----------------- Encoder (Phiên bản không MoE) -----------------
-class EGraphSAGE_GraphAlign(nn.Module):
+class EGraphSAGE(nn.Module):
     def __init__(self, ndim_in, edim, n_hidden, n_out, n_layers, activation):
-        super(EGraphSAGE_GraphAlign, self).__init__()
+        super(EGraphSAGE, self).__init__()
         self.layers = nn.ModuleList()
 
         # Đã loại bỏ tất cả logic và tham số liên quan đến MoE
@@ -105,9 +105,9 @@ class Discriminator(nn.Module):
 
 
 # ----------------- DGI Model -----------------
-class DGI_GraphAlign(nn.Module):
+class DGI(nn.Module):
     def __init__(self, encoder):
-        super(DGI_GraphAlign, self).__init__()
+        super(DGI, self).__init__()
         self.encoder = encoder
 
         # Logic này vẫn hoạt động vì EGraphSAGELayer vẫn lưu self.edge_out_dim
