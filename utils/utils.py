@@ -514,4 +514,4 @@ def evaluate_model(model, env, num_episodes=1000, device=None):
 
     dsp = (successes / num_episodes) * 100
     print(f"\n--- Evaluation Complete ---")
-    print(f"Defense success probability: {dsp:.2f}% ({successes}/{num_episodes})")
+    print(f"Defense success probability: {dsp:.3f}% ({successes}/{num_episodes})")
