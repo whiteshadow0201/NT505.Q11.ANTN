@@ -132,4 +132,7 @@ class DGI(nn.Module):
         negative_scores = self.discriminator(negative_edges, summary)
         l1 = self.loss(positive_scores, torch.ones_like(positive_scores))
         l2 = self.loss(negative_scores, torch.zeros_like(negative_scores))
+        print(l1.shape)
+        print(l2.shape)
+
         return l1 + l2
