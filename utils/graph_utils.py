@@ -128,6 +128,8 @@ class DGI(nn.Module):
         _, positive_edges = self.encoder(g, nfeats, efeats, corrupt=False)
         _, negative_edges = self.encoder(g, nfeats, efeats, corrupt=True)
         summary = torch.sigmoid(positive_edges.mean(dim=0))
+        print("--",summary.shape, "--")
+
         positive_scores = self.discriminator(positive_edges, summary)
         negative_scores = self.discriminator(negative_edges, summary)
         l1 = self.loss(positive_scores, torch.ones_like(positive_scores))
