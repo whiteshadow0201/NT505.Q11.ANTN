@@ -339,7 +339,7 @@ class NetworkEnv:
     def __init__(self, G_new, attack_fn, g_dgl, encoder,
                  original_node_features, original_edge_features,
                  node_map, num_honeypots,  # <-- N đây rồi
-                 goal=None):
+                 ):
 
         self.g_dgl = g_dgl
         self.encoder = encoder
@@ -351,16 +351,12 @@ class NetworkEnv:
         self.G_new = G_new
         self.attack_fn = attack_fn
 
-        if goal is None:
-            self.goal = []
-        elif not isinstance(goal, list):
-            self.goal = [goal]
-        else:
-            self.goal = goal
-
         self.node_to_idx = node_map
         self.nodes = list(node_map.keys())
         self.num_nodes = len(self.nodes)
+
+        self.goal = [node for node, attrs in self.G_new.nodes(data=True)
+                     if attrs.get('priority') == 2]
 
         print("node_to_idx đã được tải:", self.node_to_idx)
         print(f"Mục tiêu (Goals) được thiết lập: {self.goal}")

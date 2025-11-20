@@ -4,15 +4,12 @@ import torch.nn.functional as F
 import dgl
 import dgl.function as fn
 from utils import *
-
-# --- Đã loại bỏ FMoE (FastMoE) ---
-
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print(f"Using device: {device}")
+import os
 
 
 
-# ----------------- Lớp EGraphSAGELayer (Phiên bản không MoE) -----------------
+
+
 class EGraphSAGELayer(nn.Module):
     def __init__(self, ndim_in, edim_in, ndim_out, edim_out, activation):
         super(EGraphSAGELayer, self).__init__()
@@ -49,9 +46,9 @@ class EGraphSAGELayer(nn.Module):
             return h_nodes_new, h_edges_new
 
 
-# ----------------- Encoder (Phiên bản không MoE) -----------------
+# ----------------- Encoder -----------------
 class EGraphSAGE(nn.Module):
-    def __init__(self, ndim_in, edim, n_hidden, n_out, n_layers, activation):
+    def __init__(self, ndim_in, edim, n_hidden, n_out, n_layers, activation, device):
         super(EGraphSAGE, self).__init__()
         self.layers = nn.ModuleList()
 
@@ -128,13 +125,59 @@ class DGI(nn.Module):
         _, positive_edges = self.encoder(g, nfeats, efeats, corrupt=False)
         _, negative_edges = self.encoder(g, nfeats, efeats, corrupt=True)
         summary = torch.sigmoid(positive_edges.mean(dim=0))
-        print("--",summary.shape, "--")
+        # print("--",summary.shape, "--")
 
         positive_scores = self.discriminator(positive_edges, summary)
         negative_scores = self.discriminator(negative_edges, summary)
         l1 = self.loss(positive_scores, torch.ones_like(positive_scores))
         l2 = self.loss(negative_scores, torch.zeros_like(negative_scores))
-        print(l1.shape)
-        print(l2.shape)
+        # print(l1.shape)
+        # print(l2.shape)
 
         return l1 + l2
+
+
+# ----------------- Export -----------------
+import os
+import torch
+import yaml
+import networkx as nx
+from networkx.readwrite import json_graph
+
+def save_graph_env(experiment_id, G_nx, nfeats, efeats, node_order, base_dir='graphs'):
+    """
+    Lưu môi trường đồ thị và các thông tin liên quan vào file .pth để Agent sử dụng.
+
+    Args:
+        experiment_id (int/str): ID của thí nghiệm (tên thư mục con).
+        G_nx (networkx.Graph): Đồ thị NetworkX gốc.
+        nfeats (Tensor): Đặc trưng node (gốc).
+        efeats (Tensor): Đặc trưng cạnh (gốc).
+        node_order (list): Danh sách tên các node theo thứ tự index.
+        base_dir (str): Thư mục cha chứa các graph (mặc định là 'graphs').
+    """
+    # 1. Tạo đường dẫn thư mục
+    save_path = os.path.join(base_dir, str(experiment_id))
+    os.makedirs(save_path, exist_ok=True)
+    print(f"Đang xử lý lưu dữ liệu vào thư mục: {save_path}")
+
+    # 2. Tạo ánh xạ Tên -> Index
+    node_map = {name: i for i, name in enumerate(node_order)}
+
+    # 3. Đóng gói dữ liệu
+    # Lưu ý: Key 'g1' được giữ nguyên để tương thích với code load của Agent cũ
+    env_data = {
+        "G": G_nx,
+        "nfeats": nfeats,
+        "efeats": efeats,
+        "node_order": node_order,
+        "node_map": node_map,
+    }
+
+    # 4. Lưu file môi trường
+    env_file_path = os.path.join(save_path, "graph_environment.pth")
+    torch.save(env_data, env_file_path)
+
+    print(f" >> Đã lưu Môi trường Tĩnh (env_data) vào: {env_file_path}")
+
+    return save_path
