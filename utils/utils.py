@@ -256,7 +256,6 @@ def sample_exploration_index(new_num_honeypot_nodes, old_num_honeypot_nodes, num
     return selected_idx, exploration_done
 
 
-# ... (Class DQN không thay đổi) ...
 import torch
 import torch.nn as nn
 
@@ -347,7 +346,6 @@ class NetworkEnv:
         self.original_edge_features = original_edge_features.clone()
         self.encoder.eval()
         self.num_honeypots = num_honeypots  # <-- Lưu N
-
         self.G_new = G_new
         self.attack_fn = attack_fn
 
@@ -377,8 +375,10 @@ class NetworkEnv:
             node_embeddings, _ = self.encoder(
                 self.g_dgl,
                 new_node_features,
-                self.original_edge_features
+                self.original_edge_features,
+                corrupt = False
             )
+
         return node_embeddings
 
     def reset(self):
@@ -438,7 +438,7 @@ class NetworkEnv:
         # M = self.num_honeypot_nodes
         # N = self.num_honeypots
         return self.num_honeypot_nodes ** self.num_honeypots
-
+c
 
 # ### SỬA ĐỔI ###: Cần cập nhật hàm evaluate để truyền đúng tham số
 def evaluate_model(model, env, num_episodes=1000, device=None):
