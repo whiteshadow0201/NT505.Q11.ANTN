@@ -52,7 +52,6 @@ class EGraphSAGE(nn.Module):
         super(EGraphSAGE, self).__init__()
         self.layers = nn.ModuleList()
 
-        # Đã loại bỏ tất cả logic và tham số liên quan đến MoE
 
         if n_layers == 1:
             self.layers.append(EGraphSAGELayer(ndim_in, edim, n_out, n_out, activation))

@@ -429,22 +429,12 @@ class NetworkEnv:
         new_node_features = self.original_node_features.clone()
         new_state_tensor = torch.tensor(numpy_state_array, dtype=torch.float32)
 
-        # Lưu ý: numpy_state_array cần có kích thước khớp với số node hiện tại của g_dgl
-        # Nếu g_dgl đã thêm node (trong step), numpy_state_array cũng phải lớn tương ứng
         if new_node_features.shape[0] != len(numpy_state_array):
-            # Logic xử lý nếu size lệch (thường là do thêm honeypot)
-            # Bạn có thể cần resize new_node_features tạm thời ở đây
-            pass
+            pass  # Xử lý logic resize nếu cần
 
         new_node_features[:len(numpy_state_array), 0] = new_state_tensor
 
-        # 1.5. Tạo Mask (1: Thật, 0: Đệm)
-        num_real_nodes = len(self.nodes)
-        # Kích thước mask = (max_nodes,)
-        mask = torch.zeros(self.max_nodes, dtype=torch.bool)  # Dùng bool để tiết kiệm nhớ
-        mask[:num_real_nodes] = True
-
-        # 2. Chạy Encoder để lấy embedding thô (kích thước thay đổi)
+        # 2. Chạy Encoder để lấy embedding thô
         with torch.no_grad():
             node_embeddings, edge_embeddings = self.encoder(
                 self.g_dgl,
@@ -453,18 +443,30 @@ class NetworkEnv:
                 corrupt=False
             )
 
-        # 3. Áp dụng PADDING để cố định shape
-        # Output sẽ luôn là (max_nodes, D) và (max_edges, D)
-        fixed_node_embeddings = pad_embedding(node_embeddings, self.max_nodes)
+        # 3. PADDING cho NODE (như cũ) -> (max_nodes, D)
+        # Lưu ý: Pad value cho NODE dùng số nhỏ để tránh max-pooling chọn nhầm (nếu có)
+        fixed_node_embeddings = pad_embedding(node_embeddings, self.max_nodes, pad_value=-1e9)
 
-        # Nếu bạn cần dùng edge embeddings cho DQN thì pad luôn, nếu không thì bỏ qua
-        fixed_edge_embeddings = pad_embedding(edge_embeddings, self.max_edges)
+        # 4. PADDING cho EDGE (MỚI) -> (max_edges, D)
+        # Lưu ý: Pad value cho EDGE nên là 0 (neutral) vì cạnh ảo không nên có tín hiệu
+        fixed_edge_embeddings = pad_embedding(edge_embeddings, self.max_edges, pad_value=0)
 
-        return fixed_node_embeddings, fixed_edge_embeddings
+        # 5. FLATTEN và CONCAT (MỚI)
+        # Biến đổi: (24, D) -> (24*D)
+        flat_nodes = fixed_node_embeddings.flatten()
+
+        # Biến đổi: (36, D) -> (36*D)
+        flat_edges = fixed_edge_embeddings.flatten()
+
+        # Nối lại thành 1 vector dài: (24*D + 36*D)
+        # Đây là state hoàn chỉnh mà DQN sẽ nhìn thấy
+        full_state = torch.cat([flat_nodes, flat_edges])
+
+        return full_state
 
     def reset(self):
         self.state_np = np.zeros(self.num_nodes, dtype=np.float32)
-        initial_embeddings, _ = self._get_embeddings_from_state(self.state_np)
+        initial_embeddings = self._get_embeddings_from_state(self.state_np)
         return initial_embeddings
 
     def step(self, action):
@@ -526,7 +528,7 @@ class NetworkEnv:
                 new_state_np[self.node_to_idx[node]] = 1
 
         self.state_np = new_state_np
-        new_state_embeddings, _ = self._get_embeddings_from_state(self.state_np)
+        new_state_embeddings = self._get_embeddings_from_state(self.state_np)
         return new_state_embeddings, reward, done, path, captured
 
     def get_action_space_size(self):
