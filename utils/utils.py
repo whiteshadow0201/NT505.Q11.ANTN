@@ -1,4 +1,3 @@
-# utils2.py
 import math
 import random
 import numpy as np
@@ -14,7 +13,7 @@ import torch
 from copy import deepcopy
 import random
 import itertools  # ### SỬA ĐỔI ###: Thêm thư viện để lặp
-
+import torch.nn.functional as F
 
 # ### SỬA ĐỔI ###: Hàm cantor_pairing (chỉ cho 2) bị XÓA.
 # ### THAY THẾ BẰNG: tuple_to_index (cho N) ###
@@ -110,53 +109,76 @@ def sample_valid_action_matrix(N, M):
     return action
 
 
-def select_action_multi_head(q_values_N_M):
+def select_action_multi_head(q_values_N_M, num_real_nodes=None):
     """
     Chọn hành động [N, M] one-hot tốt nhất từ output Q-value [N, M].
     Đảm bảo các nút được chọn (trục M) là khác nhau.
 
     Args:
-        q_values_N_M (torch.Tensor): Tensor Q-values shape (N, M)
+        q_values_N_M: Tensor hoặc Numpy array shape (N, M)
+        num_real_nodes: (Int) Số lượng node thực tế. Nếu None, giả định tất cả là thực.
     """
+    # Chuyển sang numpy nếu là tensor
+    if isinstance(q_values_N_M, torch.Tensor):
+        q_values_N_M = q_values_N_M.cpu().numpy()  # Dùng .cpu() cho an toàn
+
     N = q_values_N_M.shape[0]
     M = q_values_N_M.shape[1]
+
+    # --- BƯỚC 1: ACTION MASKING ---
+    # Nếu truyền vào số lượng node thật, ta gán -inf cho phần thừa
+    if num_real_nodes is not None and num_real_nodes < M:
+        q_values_N_M[:, num_real_nodes:] = -float('inf')
+
     action = np.zeros((N, M), dtype=np.float32)
 
-    # Chuyển Q-values (N, M) thành danh sách (Q, head_idx, node_idx)
+    # Chuyển Q-values (N, M) thành danh sách phẳng: (Q-value, index_honeypot, index_node)
     q_values_flat = []
     for i in range(N):
         for j in range(M):
-            # .item() để chuyển từ tensor sang số Python
-            q_values_flat.append((q_values_N_M[i, j].item(), i, j))
+            q_values_flat.append((q_values_N_M[i, j], i, j))
 
-            # Sắp xếp giảm dần theo Q-value
+    # --- BƯỚC 2: SẮP XẾP ---
+    # Sắp xếp giảm dần. Các giá trị -inf sẽ bị đẩy xuống cuối cùng.
     q_values_flat.sort(key=lambda x: x[0], reverse=True)
 
     honeypot_assigned = [False] * N
     node_chosen = [False] * M
     count = 0
 
-    # Lặp qua danh sách đã sắp xếp
+    # --- BƯỚC 3: CHỌN THAM LAM (GREEDY) ---
     for q, i, j in q_values_flat:
-        if count == N:  # Đã chọn đủ N honeypot
+        if count == N:
             break
 
-        # Nếu "đầu" (honeypot) 'i' chưa được gán VÀ nút 'j' chưa bị chọn
+        # Nếu Q-value là -inf, tức là đã hết node thật để chọn -> Dừng lại
+        if q == -float('inf'):
+            break
+
         if not honeypot_assigned[i] and not node_chosen[j]:
             action[i, j] = 1
             honeypot_assigned[i] = True
             node_chosen[j] = True
             count += 1
 
-    # Nếu vẫn còn honeypot chưa gán (do xung đột), gán ngẫu nhiên
-    # vào các nút còn trống
+    # --- BƯỚC 4: FALLBACK (DỰ PHÒNG) ---
+    # Nếu vì lý do nào đó chưa gán đủ N honeypot (ví dụ: xung đột quá nhiều)
+    # Ta chọn ngẫu nhiên các node còn trống, NHƯNG PHẢI LÀ NODE THẬT.
+
+    limit_range = num_real_nodes if num_real_nodes is not None else M
+
     for i in range(N):
         if not honeypot_assigned[i]:
-            for j in range(M):
-                if not node_chosen[j]:
-                    action[i, j] = 1
-                    node_chosen[j] = True
-                    break
+            # Chỉ tìm node trống trong khoảng [0, limit_range)
+            available_nodes = [k for k in range(limit_range) if not node_chosen[k]]
+
+            if available_nodes:
+                picked_node = random.choice(available_nodes)
+                action[i, picked_node] = 1
+                node_chosen[picked_node] = True
+            else:
+                # Trường hợp cực hữu (số honeypot > số node thật), không làm gì được
+                pass
 
     return action
 
@@ -333,11 +355,42 @@ class ReplayBuffer:
         return len(self.buffer)
 
 
-# ... (Class NetworkEnv gần như không đổi, chỉ cần sửa get_action_space_size) ...
+import torch
+import torch.nn.functional as F
+
+
+def pad_embedding(embedding, max_length, pad_value=-3636):
+    """
+    Padding tensor về kích thước cố định (max_length, hidden_dim) với giá trị tùy chỉnh.
+
+    Args:
+        embedding: Tensor (current_length, hidden_dim)
+        max_length: Int, kích thước tối đa
+        pad_value: Float, giá trị dùng để pad (mặc định là 1e9 - số rất lớn)
+
+    Output:
+        Tensor kích thước (max_length, hidden_dim)
+    """
+    curr_len = embedding.shape[0]
+
+    if curr_len > max_length:
+        # Cắt bớt nếu vượt quá (Truncate)
+        return embedding[:max_length]
+
+    if curr_len == max_length:
+        return embedding
+
+    # Tính số lượng cần pad
+    pad_len = max_length - curr_len
+
+    # Thay đổi tham số 'value' thành pad_value
+    return F.pad(embedding, (0, 0, 0, pad_len), "constant", value=pad_value)
+
 class NetworkEnv:
     def __init__(self, G_new, attack_fn, g_dgl, encoder,
                  original_node_features, original_edge_features,
                  node_map, num_honeypots,  # <-- N đây rồi
+                 max_nodes=1000, max_edges=5000
                  ):
 
         self.g_dgl = g_dgl
@@ -348,6 +401,8 @@ class NetworkEnv:
         self.num_honeypots = num_honeypots  # <-- Lưu N
         self.G_new = G_new
         self.attack_fn = attack_fn
+        self.max_nodes = max_nodes
+        self.max_edges = max_edges
 
         self.node_to_idx = node_map
         self.nodes = list(node_map.keys())
@@ -362,28 +417,54 @@ class NetworkEnv:
 
         self.state_np = np.zeros(self.num_nodes, dtype=np.float32)
 
-        self.honeypot_nodes = self.nodes
-        self.num_honeypot_nodes = len(self.honeypot_nodes)  # <-- Đây là M
-        print(f"Số lượng nút đặt (M) được thiết lập: {self.num_honeypot_nodes}")
+        print(f"Số lượng nút đặt (M) được thiết lập: {self.num_nodes}")
+
+        # Cập nhật state_size cho model DQN biết
+        # Ví dụ: nếu embedding size là 64, thì input size của DQN sẽ là max_nodes * 64
+        self.embedding_dim = original_node_features.shape[1]
+        # Lưu ý: Bạn có thể cần lấy dim từ output của encoder nếu nó khác input
 
     def _get_embeddings_from_state(self, numpy_state_array):
+        # 1. Chuẩn bị features như cũ
         new_node_features = self.original_node_features.clone()
         new_state_tensor = torch.tensor(numpy_state_array, dtype=torch.float32)
-        new_node_features[:, 0] = new_state_tensor
 
+        # Lưu ý: numpy_state_array cần có kích thước khớp với số node hiện tại của g_dgl
+        # Nếu g_dgl đã thêm node (trong step), numpy_state_array cũng phải lớn tương ứng
+        if new_node_features.shape[0] != len(numpy_state_array):
+            # Logic xử lý nếu size lệch (thường là do thêm honeypot)
+            # Bạn có thể cần resize new_node_features tạm thời ở đây
+            pass
+
+        new_node_features[:len(numpy_state_array), 0] = new_state_tensor
+
+        # 1.5. Tạo Mask (1: Thật, 0: Đệm)
+        num_real_nodes = len(self.nodes)
+        # Kích thước mask = (max_nodes,)
+        mask = torch.zeros(self.max_nodes, dtype=torch.bool)  # Dùng bool để tiết kiệm nhớ
+        mask[:num_real_nodes] = True
+
+        # 2. Chạy Encoder để lấy embedding thô (kích thước thay đổi)
         with torch.no_grad():
-            node_embeddings, _ = self.encoder(
+            node_embeddings, edge_embeddings = self.encoder(
                 self.g_dgl,
                 new_node_features,
                 self.original_edge_features,
-                corrupt = False
+                corrupt=False
             )
 
-        return node_embeddings
+        # 3. Áp dụng PADDING để cố định shape
+        # Output sẽ luôn là (max_nodes, D) và (max_edges, D)
+        fixed_node_embeddings = pad_embedding(node_embeddings, self.max_nodes)
+
+        # Nếu bạn cần dùng edge embeddings cho DQN thì pad luôn, nếu không thì bỏ qua
+        fixed_edge_embeddings = pad_embedding(edge_embeddings, self.max_edges)
+
+        return fixed_node_embeddings, fixed_edge_embeddings
 
     def reset(self):
         self.state_np = np.zeros(self.num_nodes, dtype=np.float32)
-        initial_embeddings = self._get_embeddings_from_state(self.state_np)
+        initial_embeddings, _ = self._get_embeddings_from_state(self.state_np)
         return initial_embeddings
 
     def step(self, action):
@@ -394,12 +475,30 @@ class NetworkEnv:
         honeypots = []
         G = deepcopy(self.G_new)
 
-        # Vòng lặp này đã đúng (dùng N)
+        # Lấy số lượng node thực tế hiện tại
+        num_current_nodes = len(self.nodes)
+
         for i in range(self.num_honeypots):
-            node_idx = np.argmax(action[i])
-            if action[i, node_idx] == 0:
-                node_idx = random.randint(0, self.num_honeypot_nodes - 1)
-            node = self.honeypot_nodes[node_idx]
+            # 1. Tạo bản sao của action vector cho honeypot thứ i để không làm hỏng dữ liệu gốc
+            # action[i] là vector Q-values (hoặc logits) cho honeypot i
+            masked_action = action[i].copy()
+
+            # 2. Masking: Gán giá trị rất nhỏ (-inf) cho các index nằm ngoài phạm vi node thực
+            # Giả sử action[i] có độ dài = max_nodes (bao gồm cả padding)
+            if len(masked_action) > num_current_nodes:
+                masked_action[num_current_nodes:] = -float('inf')
+
+            # 3. Chọn node có giá trị cao nhất trong vùng hợp lệ
+            node_idx = np.argmax(masked_action)
+
+            # 4. Kiểm tra an toàn (Fallback):
+            # Mặc dù đã mask, vẫn nên giữ fallback nếu mô hình chưa học tốt (giá trị max vẫn quá thấp hoặc lỗi)
+            # hoặc nếu logic mask bị sai lệch.
+            if node_idx >= num_current_nodes:
+                # Nếu vẫn lỗi index, chọn random trong vùng hợp lệ
+                node_idx = random.randint(0, num_current_nodes - 1)
+
+            node = self.nodes[node_idx]
             honeypot = f"Honeypot {{{node}}}"
             honeypots.append(honeypot)
             G.add_node(honeypot)
@@ -427,7 +526,7 @@ class NetworkEnv:
                 new_state_np[self.node_to_idx[node]] = 1
 
         self.state_np = new_state_np
-        new_state_embeddings = self._get_embeddings_from_state(self.state_np)
+        new_state_embeddings, _ = self._get_embeddings_from_state(self.state_np)
         return new_state_embeddings, reward, done, path, captured
 
     def get_action_space_size(self):
@@ -437,8 +536,7 @@ class NetworkEnv:
         """
         # M = self.num_honeypot_nodes
         # N = self.num_honeypots
-        return self.num_honeypot_nodes ** self.num_honeypots
-c
+        return self.num_nodes ** self.num_honeypots
 
 # ### SỬA ĐỔI ###: Cần cập nhật hàm evaluate để truyền đúng tham số
 def evaluate_model(model, env, num_episodes=1000, device=None):
@@ -451,55 +549,57 @@ def evaluate_model(model, env, num_episodes=1000, device=None):
     print(f"Đang đánh giá trên device: {device}")
 
     model = model.to(device)
-    model.eval()  # Chuy"n model sang chế độ đánh giá
+    model.eval()  # Chuyển model sang chế độ đánh giá
 
     successes = 0
-    # Lấy M (số nút) và N (số honeypot)
-    M_nodes = env.num_honeypot_nodes
+    M_nodes = env.num_nodes
     N_honeypots = env.num_honeypots
 
-    # ### SỬA ĐỔI ###
-    # Không còn action_space_size (M^N) nữa
     print(f"Đang đánh giá... Kiến trúc Multi-Head (N={N_honeypots} honeypots, M={M_nodes} nút)")
 
     for episode in range(1, num_episodes + 1):
-        state = env.reset().to(device)  # Shape [M, D_embed]
+        state = env.reset().to(device)
         done = False
+
+        # Lấy số lượng node thực tế để dùng cho Masking
+        real_node_count = len(env.nodes)
 
         while not done:
             with torch.no_grad():
                 # Flatten state [M, D] -> [1, M*D]
                 state_tensor = state.flatten().unsqueeze(0).to(device)
 
-                # ### SỬA ĐỔI ###
                 # Lấy output [1, N, M] từ mạng
                 q_values_all = model(state_tensor)
 
                 # Squeeze(0) -> [N, M]
                 q_values_N_M = q_values_all.squeeze(0)
 
-                # Chọn hành động tốt nhất, không trùng lặp
-                # Output là ma trận numpy [N, M] one-hot
-                action = select_action_multi_head(q_values_N_M)
-
-            # ### SỬA ĐỔI ###
-            # Không cần 'index_to_action' nữa,
-            # vì 'action' đã ở đúng định dạng [N, M]
+                # [FIX 1] Truyền real_node_count vào để Masking các node ảo
+                action = select_action_multi_head(q_values_N_M, real_node_count)
 
             next_state, reward, done, path, captured = env.step(action)
             state = next_state.to(device)
 
             # --- Logging khi kết thúc episode ---
             if reward != 0:
-                # Lấy tên các nút đã chọn từ ma trận action
-                honeypot_nodes = [env.honeypot_nodes[np.argmax(action[i])] for i in range(N_honeypots)]
+                # [FIX 2] Xử lý an toàn khi lấy tên node (tránh IndexError)
+                honeypot_names = []
+                for i in range(N_honeypots):
+                    idx = np.argmax(action[i])
+                    if idx < len(env.nodes):
+                        honeypot_names.append(env.nodes[idx])
+                    else:
+                        # Trường hợp hiếm: nếu vẫn chọn nhầm padding, in ra index thay vì lỗi
+                        honeypot_names.append(f"PAD_NODE_{idx}")
+
                 status = "Success" if reward == 1 else "Failed"
 
                 # In log ít hơn để đỡ rối
                 if episode % 50 == 0 or num_episodes <= 100:
                     print(f"--- Episode {episode}: {status} ---")
                     print(path)
-                    print(f"Honeypots connected to: {honeypot_nodes}\n")
+                    print(f"Honeypots connected to: {honeypot_names}\n")
 
                 if reward == 1:
                     successes += 1
