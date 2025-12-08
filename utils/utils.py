@@ -396,6 +396,8 @@ class NetworkEnv:
                  max_nodes=1000, max_edges=5000
                  ):
 
+        self.abc = True
+
         self.g_dgl = g_dgl
         self.encoder = encoder
         self.original_node_features = original_node_features.clone()
@@ -453,6 +455,10 @@ class NetworkEnv:
         # 4. PADDING cho EDGE (MỚI) -> (max_edges, D)
         # Lưu ý: Pad value cho EDGE nên là 0 (neutral) vì cạnh ảo không nên có tín hiệu
         fixed_edge_embeddings = pad_embedding(edge_embeddings, self.max_edges, pad_value=0)
+
+        if (self.abc == True):
+            print(fixed_edge_embeddings)
+            self.abc = False
 
         # 5. FLATTEN và CONCAT (MỚI)
         # Biến đổi: (24, D) -> (24*D)
@@ -616,3 +622,48 @@ def evaluate_model(model, env, num_episodes=1000, device=None):
     dsp = (successes / num_episodes) * 100
     print(f"\n--- Evaluation Complete ---")
     print(f"Defense success probability: {dsp:.3f}% ({successes}/{num_episodes})")
+
+# ----------------- Export -----------------
+import os
+import torch
+import yaml
+import networkx as nx
+from networkx.readwrite import json_graph
+
+def save_graph_env(experiment_id, G_nx, nfeats, efeats, node_order, base_dir='graphs'):
+    """
+    Lưu môi trường đồ thị và các thông tin liên quan vào file .pth để Agent sử dụng.
+
+    Args:
+        experiment_id (int/str): ID của thí nghiệm (tên thư mục con).
+        G_nx (networkx.Graph): Đồ thị NetworkX gốc.
+        nfeats (Tensor): Đặc trưng node (gốc).
+        efeats (Tensor): Đặc trưng cạnh (gốc).
+        node_order (list): Danh sách tên các node theo thứ tự index.
+        base_dir (str): Thư mục cha chứa các graph (mặc định là 'graphs').
+    """
+    # 1. Tạo đường dẫn thư mục
+    save_path = os.path.join(base_dir, str(experiment_id))
+    os.makedirs(save_path, exist_ok=True)
+    print(f"Đang xử lý lưu dữ liệu vào thư mục: {save_path}")
+
+    # 2. Tạo ánh xạ Tên -> Index
+    node_map = {name: i for i, name in enumerate(node_order)}
+
+    # 3. Đóng gói dữ liệu
+    # Lưu ý: Key 'g1' được giữ nguyên để tương thích với code load của Agent cũ
+    env_data = {
+        "G": G_nx,
+        "nfeats": nfeats,
+        "efeats": efeats,
+        "node_order": node_order,
+        "node_map": node_map,
+    }
+
+    # 4. Lưu file môi trường
+    env_file_path = os.path.join(save_path, "graph_environment.pth")
+    torch.save(env_data, env_file_path)
+
+    print(f" >> Đã lưu Môi trường Tĩnh (env_data) vào: {env_file_path}")
+
+    return save_path
