@@ -1,5 +1,27 @@
+import math
+import random
+import numpy as np
+from queue import PriorityQueue
+from copy import deepcopy
 import torch
+import torch.nn as nn
+from collections import deque, defaultdict
+import dgl
+import dgl.function as fn
+import numpy as np
+import torch
+from copy import deepcopy
+import random
+import itertools  # ### SỬA ĐỔI ###: Thêm thư viện để lặp
 import torch.nn.functional as F
+import time
+
+# ----------------- Export -----------------
+import os
+import torch
+import yaml
+import networkx as nx
+from networkx.readwrite import json_graph
 
 
 # ### SỬA ĐỔI ###: Hàm cantor_pairing (chỉ cho 2) bị XÓA.

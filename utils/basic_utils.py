@@ -85,3 +85,37 @@ def add_timestamp_to_edges(raw_edges_list):
     # QUAN TRỌNG: Sort danh sách dựa trên timestamp
     processed_edges.sort(key=lambda x: x[2]['timestamp'])
     return processed_edges
+
+
+def build_dgl(nx_graph, sorted_edges, node_feat_keys, edge_feat_keys):
+    """
+    Tạo DGL graph giữ nguyên thứ tự của sorted_edges.
+    """
+    # 1. Tạo mapping node (dùng thứ tự mặc định của NX)
+    node_list = list(nx_graph.nodes())
+    node_map = {name: i for i, name in enumerate(node_list)}
+
+    # 2. Tạo danh sách ID nguồn (src) và đích (dst) theo thứ tự sorted_edges
+    src_ids = [node_map[u] for u, v, _ in sorted_edges]
+    dst_ids = [node_map[v] for u, v, _ in sorted_edges]
+
+    # 3. Tạo DGL Graph từ Tensor ID (DGL sẽ giữ nguyên thứ tự này)
+    g = dgl.graph((torch.tensor(src_ids), torch.tensor(dst_ids)))
+
+    # 4. Gán Node Features
+    if node_feat_keys:
+        node_data = []
+        for n in node_list:
+            feats = [nx_graph.nodes[n][k] for k in node_feat_keys]
+            node_data.append(feats)
+        g.ndata['h'] = torch.tensor(node_data, dtype=torch.float32)
+
+    # 5. Gán Edge Features (theo thứ tự sorted_edges)
+    if edge_feat_keys:
+        edge_data = []
+        for _, _, attrs in sorted_edges:
+            feats = [attrs[k] for k in edge_feat_keys]
+            edge_data.append(feats)
+        g.edata['h'] = torch.tensor(edge_data, dtype=torch.float32)
+
+    return g, node_list, node_map
