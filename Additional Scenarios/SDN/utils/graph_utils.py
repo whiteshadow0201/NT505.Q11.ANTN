@@ -64,6 +64,7 @@ class EGraphSAGE(nn.Module):
             self.layers.append(EGraphSAGELayer(n_hidden, n_hidden, n_out, n_out, activation))
 
     def forward(self, g, nfeats, efeats, corrupt=False):
+        g = g.to(nfeats.device)
         if corrupt:
             perm = torch.randperm(efeats.shape[0], device=efeats.device)
             efeats_to_use = efeats[perm]

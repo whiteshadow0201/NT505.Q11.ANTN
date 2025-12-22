@@ -25,15 +25,17 @@ from utils.attack_algo_utils import global_weighted_random_attack
 # 1. CẤU HÌNH HỆ THỐNG
 # ======================================================
 # Cấu hình Mininet (Mục tiêu để tải graph và gửi lệnh deploy)
-MININET_IP = "192.168.2.9"
+MININET_IP = "172.30.49.12"
 MININET_PORT = 8000
 GRAPH_URL = f"http://{MININET_IP}:{MININET_PORT}/network_state.pth"
 DEPLOY_URL = f"http://{MININET_IP}:{MININET_PORT}/deploy_honeypots"
 
 # Cấu hình Server AI (Script này)
 MY_SERVER_PORT = 9999
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+# DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+DEVICE = torch.device("cpu")
 
+print("Device:",DEVICE)
 # Đường dẫn Model đã train (Từ Original.py)
 GNN_CONFIG_PATH = "graphs/model_config.yaml"
 GNN_STATE_PATH = "graphs/dgi_model_state_dict.pth"
@@ -205,7 +207,7 @@ def run_inference_pipeline():
         original_node_features=nfeats_tensor,
         original_edge_features=efeats_tensor,
         node_map=node_map,
-        num_honeypots=GLOBAL_MODELS["policy_net"].num_honeypots,
+        num_honeypots=GLOBAL_MODELS["policy_net"].num_honeypots_N,
         max_nodes=24,  # Cần khớp với lúc train (Original.py: max_nodes=24)
         max_edges=128
     )
@@ -269,19 +271,30 @@ def push_honeypot_deployment(honeypot_nodes):
 
 
 # ======================================================
-# 4. HTTP SERVER LISTENER
+# 4. HTTP SERVER LISTENER (ĐÃ SỬA)
 # ======================================================
 
 class AIRequestHandler(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         """Xử lý request POST từ Mininet"""
-        content_length = int(self.headers['Content-Length'])
-        post_data = self.rfile.read(content_length).decode('utf-8')
+        try:
+            content_length = int(self.headers['Content-Length'])
+            post_data = self.rfile.read(content_length).decode('utf-8')
+        except Exception:
+            post_data = ""
 
-        # Chỉ xử lý nếu body chứa từ khóa hoặc là đường dẫn cụ thể
-        # Ở đây ta check đơn giản
-        print(f"\n[SERVER] Nhận tín hiệu POST từ {self.client_address}")
-        print(f"[SERVER] Data: {post_data}")
+        print(f"\n[SERVER] Nhận POST từ {self.client_address}")
+        print(f"[SERVER] Payload: '{post_data}'")
+
+        # --- [MỚI] XỬ LÝ TEST CONNECTION ---
+        if "TEST CONNECTION" in post_data:
+            print(f"[SERVER] >>> Nhận lệnh ping kiểm tra. Trả lời OK.")
+            self.send_response(200)
+            self.send_header('Content-type', 'text/plain')
+            self.end_headers()
+            self.wfile.write(b"AI SERVER CONNECTED SUCCESSFULLY!")
+            return # Quan trọng: Return ngay để không chạy inference
+        # -----------------------------------
 
         if "UPDATE PLEASE!" in post_data or self.path == "/trigger_update":
             self.send_response(200)
@@ -289,8 +302,7 @@ class AIRequestHandler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(b"OK. Starting Inference Pipeline...")
 
-            # Kích hoạt pipeline trong thread riêng để không block request này
-            # (Hoặc chạy trực tiếp nếu muốn đồng bộ)
+            # Chạy AI ở luồng riêng
             t = threading.Thread(target=run_inference_pipeline)
             t.start()
         else:
@@ -299,17 +311,32 @@ class AIRequestHandler(http.server.BaseHTTPRequestHandler):
             self.wfile.write(b"Unknown command")
 
     def do_GET(self):
-        """Health check"""
         self.send_response(200)
         self.end_headers()
         self.wfile.write(b"AI Agent Server is RUNNING.")
 
 
 def start_server():
-    server_address = ('', MY_SERVER_PORT)
-    httpd = http.server.HTTPServer(server_address, AIRequestHandler)
+    # Cho phép reuse port ngay lập tức để không bị lỗi "Address already in use" khi restart nhanh
+    socketserver.TCPServer.allow_reuse_address = True
+
+    # Khởi tạo server
+    httpd = socketserver.TCPServer(("", MY_SERVER_PORT), AIRequestHandler)
+
     print(f"\n[SERVER] AI Agent đang lắng nghe tại port {MY_SERVER_PORT}...")
-    httpd.serve_forever()
+    print("[INFO] Nhấn Ctrl+C để dừng server.")
+
+    try:
+        # Chạy server (vòng lặp vô tận)
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        # Bắt sự kiện nhấn Ctrl+C
+        pass
+    finally:
+        # Dọn dẹp và đóng port dù có lỗi gì xảy ra
+        print("\n[STOP] Đang đóng kết nối và giải phóng Port...")
+        httpd.server_close()
+        print("[STOP] Server đã tắt hoàn toàn.")
 
 
 # ======================================================

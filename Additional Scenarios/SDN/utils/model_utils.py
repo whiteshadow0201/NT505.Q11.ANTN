@@ -434,6 +434,25 @@ class NetworkEnv:
         # Ví dụ: nếu embedding size là 64, thì input size của DQN sẽ là max_nodes * 64
         self.embedding_dim = original_node_features.shape[1]
         # Lưu ý: Bạn có thể cần lấy dim từ output của encoder nếu nó khác input
+    #
+    # def _get_embeddings_from_state(self, numpy_state_array):
+    #     # 1. Chuẩn bị features như cũ
+    #     new_node_features = self.original_node_features.clone()
+    #     new_state_tensor = torch.tensor(numpy_state_array, dtype=torch.float32)
+    #
+    #     if new_node_features.shape[0] != len(numpy_state_array):
+    #         pass  # Xử lý logic resize nếu cần
+    #
+    #     new_node_features[:len(numpy_state_array), 0] = new_state_tensor
+    #
+    #     # 2. Chạy Encoder để lấy embedding thô
+    #     with torch.no_grad():
+    #         node_embeddings, edge_embeddings = self.encoder(
+    #             self.g_dgl,
+    #             new_node_features,
+    #             self.original_edge_features,
+    #             corrupt=False
+    #         )
 
     def _get_embeddings_from_state(self, numpy_state_array):
         # 1. Chuẩn bị features như cũ
