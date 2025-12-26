@@ -314,10 +314,10 @@ class MultiHeadDQN(nn.Module):
 
         # Tạo N "đầu" output, mỗi đầu có M nơ-ron
         # Chúng ta dùng ModuleList để lưu trữ các lớp này
-        self.output_heads = nn.ModuleList()
+        self.heads = nn.ModuleList()
         for _ in range(num_honeypots_N):
             # Mỗi đầu là một lớp linear riêng biệt
-            self.output_heads.append(nn.Linear(128, num_nodes_M))
+            self.heads.append(nn.Linear(128, num_nodes_M))
 
     def forward(self, x):
         """
@@ -331,7 +331,7 @@ class MultiHeadDQN(nn.Module):
         # Đưa qua N đầu output
         # Kết quả sẽ là một list các tensor
         # [ (batch_size, M), (batch_size, M), ... ] (N lần)
-        q_values_list = [head(x) for head in self.output_heads]
+        q_values_list = [head(x) for head in self.heads]
 
         # Chúng ta có thể stack chúng lại để dễ xử lý
         # Output shape: (batch_size, N, M)
@@ -628,3 +628,4 @@ def evaluate_model(model, env, num_episodes=1000, device=None):
     dsp = (successes / num_episodes) * 100
     print(f"\n--- Evaluation Complete ---")
     print(f"Defense success probability: {dsp:.3f}% ({successes}/{num_episodes})")
+    return dsp
