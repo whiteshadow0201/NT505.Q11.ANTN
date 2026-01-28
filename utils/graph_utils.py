@@ -6,9 +6,6 @@ import dgl.function as fn
 import os
 
 
-
-
-
 class EGraphSAGELayer(nn.Module):
     def __init__(self, ndim_in, edim_in, ndim_out, edim_out, activation):
         super(EGraphSAGELayer, self).__init__()
@@ -16,19 +13,22 @@ class EGraphSAGELayer(nn.Module):
         self.node_out_dim = ndim_out
         self.edge_out_dim = edim_out
 
-        # Chỉ sử dụng các lớp Linear tiêu chuẩn
+        # Using standard Linear layers for node and edge updates
         self.W_apply = nn.Linear(ndim_in + ndim_in + edim_in, ndim_out)
         self.W_edge = nn.Linear(ndim_out * 2, edim_out)
 
     def message_func(self, edges):
+        # Concatenate source node features with edge features
         return {'m': torch.cat([edges.src['h'], edges.data['h']], dim=1)}
 
     def forward(self, g, nfeats, efeats):
         with g.local_scope():
             g.ndata['h'] = nfeats
             g.edata['h'] = efeats
+            # Aggregate neighbor messages using mean
             g.update_all(self.message_func, fn.mean('m', 'h_neigh'))
 
+            # Update node features
             x_apply = torch.cat([nfeats, g.ndata['h_neigh']], dim=1)
             h_nodes_new = self.W_apply(x_apply)
             if self.activation:
@@ -36,6 +36,7 @@ class EGraphSAGELayer(nn.Module):
 
             g.ndata['h_new'] = h_nodes_new
             u, v = g.edges()
+            # Update edge features based on the new endpoints
             edge_input = torch.cat([g.ndata['h_new'][u], g.ndata['h_new'][v]], dim=1)
 
             h_edges_new = self.W_edge(edge_input)
@@ -51,20 +52,20 @@ class EGraphSAGE(nn.Module):
         super(EGraphSAGE, self).__init__()
         self.layers = nn.ModuleList()
 
-
         if n_layers == 1:
             self.layers.append(EGraphSAGELayer(ndim_in, edim, n_out, n_out, activation))
         else:
-            # Lớp đầu tiên
+            # Input layer
             self.layers.append(EGraphSAGELayer(ndim_in, edim, n_hidden, n_hidden, activation))
-            # Các lớp ẩn
+            # Hidden layers
             for l in range(1, n_layers - 1):
                 self.layers.append(EGraphSAGELayer(n_hidden, n_hidden, n_hidden, n_hidden, activation))
-            # Lớp cuối cùng
+            # Output layer
             self.layers.append(EGraphSAGELayer(n_hidden, n_hidden, n_out, n_out, activation))
 
     def forward(self, g, nfeats, efeats, corrupt=False):
         if corrupt:
+            # Corrupt edge features by shuffling to generate negative samples for DGI
             perm = torch.randperm(efeats.shape[0], device=efeats.device)
             efeats_to_use = efeats[perm]
         else:
@@ -94,6 +95,7 @@ class Discriminator(nn.Module):
                 m.bias.data.fill_(0.0)
 
     def forward(self, features, summary):
+        # Expand global summary to match individual feature dimensions
         summary_expanded = summary.expand_as(features)
         scores = self.bilinear(features, summary_expanded)
         return scores
@@ -105,33 +107,34 @@ class DGI(nn.Module):
         super(DGI, self).__init__()
         self.encoder = encoder
 
-        # Logic này vẫn hoạt động vì EGraphSAGELayer vẫn lưu self.edge_out_dim
+        # Retrieve output dimension from the last encoder layer
         last_layer_out_dim = getattr(encoder.layers[-1], "edge_out_dim", None)
 
         if last_layer_out_dim is None:
-            # Fallback (phòng trường hợp) - cũng sẽ hoạt động vì W_edge là nn.Linear
+            # Fallback (safety check) - checks the linear layer directly
             last_layer = encoder.layers[-1].W_edge
             last_layer_out_dim = getattr(last_layer, "out_features", None)
 
         if last_layer_out_dim is None:
-            raise RuntimeError("Không xác định được kích thước đầu ra của W_edge ở tầng cuối cùng.")
+            raise RuntimeError("Could not determine the output dimension of W_edge in the last layer.")
 
         self.discriminator = Discriminator(last_layer_out_dim)
         self.loss = nn.BCEWithLogitsLoss()
 
     def forward(self, g, nfeats, efeats):
+        # Get embeddings for both real (positive) and corrupted (negative) edges
         _, positive_edges = self.encoder(g, nfeats, efeats, corrupt=False)
         _, negative_edges = self.encoder(g, nfeats, efeats, corrupt=True)
-        summary = torch.sigmoid(positive_edges.mean(dim=0))
-        # print("--",summary.shape, "--")
 
+        # Create a global summary vector via mean pooling
+        summary = torch.sigmoid(positive_edges.mean(dim=0))
+
+        # Discriminate between positive pairs and negative pairs
         positive_scores = self.discriminator(positive_edges, summary)
         negative_scores = self.discriminator(negative_edges, summary)
+
+        # Calculate standard DGI contrastive loss
         l1 = self.loss(positive_scores, torch.ones_like(positive_scores))
         l2 = self.loss(negative_scores, torch.zeros_like(negative_scores))
-        # print(l1.shape)
-        # print(l2.shape)
 
         return l1 + l2
-
-

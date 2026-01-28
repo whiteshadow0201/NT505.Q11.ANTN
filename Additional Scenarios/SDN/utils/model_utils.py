@@ -314,10 +314,10 @@ class MultiHeadDQN(nn.Module):
 
         # Tạo N "đầu" output, mỗi đầu có M nơ-ron
         # Chúng ta dùng ModuleList để lưu trữ các lớp này
-        self.output_heads = nn.ModuleList()
+        self.heads = nn.ModuleList()
         for _ in range(num_honeypots_N):
             # Mỗi đầu là một lớp linear riêng biệt
-            self.output_heads.append(nn.Linear(128, num_nodes_M))
+            self.heads.append(nn.Linear(128, num_nodes_M))
 
     def forward(self, x):
         """
@@ -331,7 +331,7 @@ class MultiHeadDQN(nn.Module):
         # Đưa qua N đầu output
         # Kết quả sẽ là một list các tensor
         # [ (batch_size, M), (batch_size, M), ... ] (N lần)
-        q_values_list = [head(x) for head in self.output_heads]
+        q_values_list = [head(x) for head in self.heads]
 
         # Chúng ta có thể stack chúng lại để dễ xử lý
         # Output shape: (batch_size, N, M)
@@ -434,25 +434,6 @@ class NetworkEnv:
         # Ví dụ: nếu embedding size là 64, thì input size của DQN sẽ là max_nodes * 64
         self.embedding_dim = original_node_features.shape[1]
         # Lưu ý: Bạn có thể cần lấy dim từ output của encoder nếu nó khác input
-    #
-    # def _get_embeddings_from_state(self, numpy_state_array):
-    #     # 1. Chuẩn bị features như cũ
-    #     new_node_features = self.original_node_features.clone()
-    #     new_state_tensor = torch.tensor(numpy_state_array, dtype=torch.float32)
-    #
-    #     if new_node_features.shape[0] != len(numpy_state_array):
-    #         pass  # Xử lý logic resize nếu cần
-    #
-    #     new_node_features[:len(numpy_state_array), 0] = new_state_tensor
-    #
-    #     # 2. Chạy Encoder để lấy embedding thô
-    #     with torch.no_grad():
-    #         node_embeddings, edge_embeddings = self.encoder(
-    #             self.g_dgl,
-    #             new_node_features,
-    #             self.original_edge_features,
-    #             corrupt=False
-    #         )
 
     def _get_embeddings_from_state(self, numpy_state_array):
         # 1. Chuẩn bị features như cũ
@@ -647,3 +628,77 @@ def evaluate_model(model, env, num_episodes=1000, device=None):
     dsp = (successes / num_episodes) * 100
     print(f"\n--- Evaluation Complete ---")
     print(f"Defense success probability: {dsp:.3f}% ({successes}/{num_episodes})")
+    return dsp
+
+##########################################################################################
+def evaluate_custom_honeypots(env, honeypot_node_indices, num_episodes=1000):
+    """
+    Đánh giá hiệu quả (DSP) của một cấu hình Honeypot cố định qua nhiều lần chạy.
+
+    Args:
+        env: Đối tượng NetworkEnv.
+        honeypot_node_indices (list[int]): Danh sách index các node đặt honeypot.
+        num_episodes (int): Số lần chạy giả lập để tính xác suất.
+    """
+    print(f"\n--- Đánh giá Cấu hình Honeypot Tùy chỉnh (Chạy {num_episodes} lần) ---")
+
+    # 1. Kiểm tra đầu vào
+    if len(honeypot_node_indices) != env.num_honeypots:
+        print(f"LỖI: Cần {env.num_honeypots} vị trí, bạn cung cấp {len(honeypot_node_indices)}.")
+        return
+
+    # 2. Tạo Action Matrix cố định (vì vị trí honeypot không đổi)
+    N = env.num_honeypots
+    M = getattr(env, 'max_nodes', env.num_nodes)
+
+    fixed_action = np.zeros((N, M), dtype=np.float32)
+    chosen_names = []
+
+    for i, node_idx in enumerate(honeypot_node_indices):
+        if node_idx >= M:
+            print(f"LỖI: Index {node_idx} không hợp lệ.")
+            return
+        fixed_action[i, node_idx] = 1.0
+
+        # Lấy tên node để hiển thị
+        if node_idx < len(env.nodes):
+            chosen_names.append(env.nodes[node_idx])
+        else:
+            chosen_names.append(f"UNKNOWN_{node_idx}")
+
+    print(f"Vị trí Honeypot: {chosen_names} (Indices: {honeypot_node_indices})")
+
+    # 3. Vòng lặp đánh giá
+    success_count = 0
+    start_time = time.time()
+
+    for episode in range(num_episodes):
+        # Reset môi trường
+        env.reset()
+
+        # Chạy bước đi với action cố định
+        _, reward, _, path, captured = env.step(fixed_action)
+
+        if reward == 1:
+            success_count += 1
+
+        # (Tùy chọn) In log cho lần chạy đầu tiên để debug xem đường đi thế nào
+        if episode == 0:
+            print(f"\n[Mẫu lần chạy #1]")
+            print(f"  - Kết quả: {'Thành công' if reward == 1 else 'Thất bại'}")
+            print(f"  - Đường tấn công: {path}")
+            print(f"  - Node bị chiếm: {captured}\n")
+
+    # 4. Tính toán DSP
+    dsp = (success_count / num_episodes) * 100
+    elapsed_time = time.time() - start_time
+
+    print("-" * 50)
+    print(f"KẾT QUẢ ĐÁNH GIÁ:")
+    print(f"  - Tổng số lần chạy: {num_episodes}")
+    print(f"  - Số lần chặn thành công: {success_count}")
+    print(f"  - DSP (Defense Success Probability): {dsp:.2f}%")
+    print(f"  - Thời gian thực thi: {elapsed_time:.2f}s")
+    print("-" * 50 + "\n")
+
+    return dsp

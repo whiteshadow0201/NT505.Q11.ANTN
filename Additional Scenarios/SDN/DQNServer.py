@@ -25,7 +25,7 @@ from utils.attack_algo_utils import global_weighted_random_attack
 # 1. CẤU HÌNH HỆ THỐNG
 # ======================================================
 # Cấu hình Mininet (Mục tiêu để tải graph và gửi lệnh deploy)
-MININET_IP = "172.30.49.12"
+MININET_IP = "192.168.2.9"
 MININET_PORT = 8000
 GRAPH_URL = f"http://{MININET_IP}:{MININET_PORT}/network_state.pth"
 DEPLOY_URL = f"http://{MININET_IP}:{MININET_PORT}/deploy_honeypots"

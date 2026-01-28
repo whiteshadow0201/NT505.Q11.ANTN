@@ -629,3 +629,76 @@ def evaluate_model(model, env, num_episodes=1000, device=None):
     print(f"\n--- Evaluation Complete ---")
     print(f"Defense success probability: {dsp:.3f}% ({successes}/{num_episodes})")
     return dsp
+
+##########################################################################################
+def evaluate_custom_honeypots(env, honeypot_node_indices, num_episodes=1000):
+    """
+    Đánh giá hiệu quả (DSP) của một cấu hình Honeypot cố định qua nhiều lần chạy.
+
+    Args:
+        env: Đối tượng NetworkEnv.
+        honeypot_node_indices (list[int]): Danh sách index các node đặt honeypot.
+        num_episodes (int): Số lần chạy giả lập để tính xác suất.
+    """
+    print(f"\n--- Đánh giá Cấu hình Honeypot Tùy chỉnh (Chạy {num_episodes} lần) ---")
+
+    # 1. Kiểm tra đầu vào
+    if len(honeypot_node_indices) != env.num_honeypots:
+        print(f"LỖI: Cần {env.num_honeypots} vị trí, bạn cung cấp {len(honeypot_node_indices)}.")
+        return
+
+    # 2. Tạo Action Matrix cố định (vì vị trí honeypot không đổi)
+    N = env.num_honeypots
+    M = getattr(env, 'max_nodes', env.num_nodes)
+
+    fixed_action = np.zeros((N, M), dtype=np.float32)
+    chosen_names = []
+
+    for i, node_idx in enumerate(honeypot_node_indices):
+        if node_idx >= M:
+            print(f"LỖI: Index {node_idx} không hợp lệ.")
+            return
+        fixed_action[i, node_idx] = 1.0
+
+        # Lấy tên node để hiển thị
+        if node_idx < len(env.nodes):
+            chosen_names.append(env.nodes[node_idx])
+        else:
+            chosen_names.append(f"UNKNOWN_{node_idx}")
+
+    print(f"Vị trí Honeypot: {chosen_names} (Indices: {honeypot_node_indices})")
+
+    # 3. Vòng lặp đánh giá
+    success_count = 0
+    start_time = time.time()
+
+    for episode in range(num_episodes):
+        # Reset môi trường
+        env.reset()
+
+        # Chạy bước đi với action cố định
+        _, reward, _, path, captured = env.step(fixed_action)
+
+        if reward == 1:
+            success_count += 1
+
+        # (Tùy chọn) In log cho lần chạy đầu tiên để debug xem đường đi thế nào
+        if episode == 0:
+            print(f"\n[Mẫu lần chạy #1]")
+            print(f"  - Kết quả: {'Thành công' if reward == 1 else 'Thất bại'}")
+            print(f"  - Đường tấn công: {path}")
+            print(f"  - Node bị chiếm: {captured}\n")
+
+    # 4. Tính toán DSP
+    dsp = (success_count / num_episodes) * 100
+    elapsed_time = time.time() - start_time
+
+    print("-" * 50)
+    print(f"KẾT QUẢ ĐÁNH GIÁ:")
+    print(f"  - Tổng số lần chạy: {num_episodes}")
+    print(f"  - Số lần chặn thành công: {success_count}")
+    print(f"  - DSP (Defense Success Probability): {dsp:.2f}%")
+    print(f"  - Thời gian thực thi: {elapsed_time:.2f}s")
+    print("-" * 50 + "\n")
+
+    return dsp
